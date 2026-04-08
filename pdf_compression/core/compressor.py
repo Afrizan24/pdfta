@@ -234,16 +234,19 @@ def rasterize_scan_pdf(
 
     try:
         zoom = target_dpi / 72.0
-        mat = fitz.Matrix(zoom, zoom)
+        print(f"DEBUG: Rasterizing at {target_dpi} DPI (zoom factor: {zoom:.2f})")
 
         for i in range(src.page_count):
             page = src.load_page(i)
+            rect = page.rect
 
             # Per-page grayscale detection (skip if user forced grayscale)
             page_gray = grayscale or _is_page_grayscale(page)
 
             colorspace = fitz.csGRAY if page_gray else fitz.csRGB
-            pix = page.get_pixmap(matrix=mat, colorspace=colorspace, alpha=False)
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), colorspace=colorspace, alpha=False)
+
+            print(f"DEBUG: Page {i+1}: {rect.width:.0f}x{rect.height:.0f} -> {pix.width}x{pix.height} pixels ({pix.width * pix.height} total pixels)")
 
             mode = "L" if pix.n == 1 else "RGB"
             img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
@@ -258,11 +261,14 @@ def rasterize_scan_pdf(
                 subsampling=2 if jpeg_quality < 85 else 0,
             )
 
-            rect = page.rect
+            print(f"DEBUG: JPEG size: {len(buf.getvalue())} bytes (quality: {jpeg_quality})")
+
             new_page = dst.new_page(width=rect.width, height=rect.height)
             new_page.insert_image(rect, stream=buf.getvalue())
 
         dst.save(out_path, garbage=4, deflate=True, clean=True)
+        final_size = os.path.getsize(out_path)
+        print(f"DEBUG: Final PDF size: {final_size} bytes")
     finally:
         src.close()
         dst.close()
@@ -323,6 +329,7 @@ def compress(
         min_images_for_scan=min_images_for_scan,
     )
     used_mode = detected if mode == "AUTO" else mode
+    print(f"DEBUG: Input mode: {mode}, Detected class: {detected}, Used mode: {used_mode}")
     gs_used = False
     gs_available = GS_EXECUTABLE is not None
     time_ms = 0.0
@@ -363,8 +370,9 @@ def compress(
             struct_path = _tmp(tmp_dir, "struct.pdf")
             gs_path     = _tmp(tmp_dir, "gs.pdf")
 
-            # Recompress quality slightly lower than user setting for embedded images
-            img_q = max(jpeg_quality - 5, 40)
+            # Recompress embedded images using the actual JPEG slider value
+            # Note: DPI is not directly used here, but affects JPEG quality settings
+            img_q = max(min(jpeg_quality, 95), 40)
 
             candidates = [(before, in_path)]
 
@@ -392,15 +400,19 @@ def compress(
             # Pass C — Ghostscript font subsetting (on original, GS does its own image opt)
             skip_gs = not gs_available or (before > max_size_for_gs_mb * 1_048_576)
             if not skip_gs:
+                print(f"DEBUG: Using Ghostscript - DPI {dpi} will be applied")
                 try:
                     sC = font_subsetting_gs(in_path, gs_path,
-                                            pdf_setting=pdf_setting, grayscale=grayscale)
+                                            pdf_setting=pdf_setting, grayscale=grayscale,
+                                            dpi=dpi, jpeg_quality=jpeg_quality)
                     time_ms += sC["time_ms"]
                     if _size(gs_path):
                         candidates.append((_size(gs_path), gs_path))
                         gs_used = True
                 except RuntimeError:
                     pass
+            else:
+                print(f"DEBUG: Skipping Ghostscript - file too large or not available")
 
             candidates.sort(key=lambda x: x[0])
             best_size, best_path = candidates[0]
@@ -444,6 +456,28 @@ def compress(
         "gs_available": gs_available,
         "gs_used": gs_used,
         "gs_executable": GS_EXECUTABLE,
+        # Parameter usage info
+        "param_usage": {
+            "dpi_used": used_mode == "SCAN" or (used_mode in ("DIGITAL", "HYBRID") and gs_used),
+            "jpeg_used": True,  # Always used in some form
+            "garbage_used": True,  # Always used in structural optimization
+            "gs_skipped_reason": "file too large" if gs_available and before > max_size_for_gs_mb * 1_048_576 else None,
+        },
+        # Compression parameters used
+        "params": {
+            "mode": mode,
+            "dpi": dpi,
+            "jpeg_quality": jpeg_quality,
+            "grayscale": grayscale,
+            "garbage": garbage,
+            "deflate": deflate,
+            "clean": clean,
+            "pdf_setting": pdf_setting,
+            "scan_text_threshold": scan_text_threshold,
+            "digital_text_threshold": digital_text_threshold,
+            "min_images_for_scan": min_images_for_scan,
+            "max_size_for_gs_mb": max_size_for_gs_mb,
+        },
     }
 
     return pdf_bytes, info

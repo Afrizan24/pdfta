@@ -10,6 +10,7 @@ import tempfile
 from flask import Blueprint, Response, jsonify, request, send_file
 
 from core.compressor import compress as pdf_compress
+from core.classifier import classify_pdf
 from core.features import extract_features
 
 compress_bp = Blueprint("compress", __name__)
@@ -25,12 +26,34 @@ def preview():
     if not file.filename.lower().endswith(".pdf"):
         return jsonify({"error": "File must be a .pdf"}), 400
 
+    def form_int(key, default):
+        try:
+            return int(request.form.get(key, default))
+        except (ValueError, TypeError):
+            return default
+
+    def form_float(key, default):
+        try:
+            return float(request.form.get(key, default))
+        except (ValueError, TypeError):
+            return default
+
+    scan_th = form_int("scan_th", 20)
+    digital_th = form_int("digital_th", 200)
+    min_img = form_float("min_img", 1.0)
+
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         file.save(tmp.name)
         tmp_path = tmp.name
 
     try:
         feats = extract_features(tmp_path)
+        detected = classify_pdf(
+            feats,
+            text_scan_threshold=scan_th,
+            text_digital_threshold=digital_th,
+            min_images_for_scan=min_img,
+        )
         return jsonify({
             "pages": feats.pages,
             "file_size_bytes": feats.file_size_bytes,
@@ -38,6 +61,7 @@ def preview():
             "total_images": feats.total_images,
             "avg_text_len_per_page": round(feats.avg_text_len_per_page, 2),
             "avg_images_per_page": round(feats.avg_images_per_page, 2),
+            "detected_class": detected,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500

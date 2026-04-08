@@ -24,6 +24,8 @@ def font_subsetting_gs(
     out_path: str,
     pdf_setting: str = "/ebook",
     grayscale: bool = False,
+    dpi: int = 150,
+    jpeg_quality: int = 75,
 ) -> Dict[str, float]:
     """
     Font subsetting + optimisation via Ghostscript.
@@ -50,6 +52,8 @@ def font_subsetting_gs(
 
     cmd.extend([
         f"-dPDFSETTINGS={pdf_setting}",
+        f"-r{dpi}",  # Set resolution
+        f"-dJPEGQ={jpeg_quality}",  # JPEG quality for embedded images
         "-dNOPAUSE",
         "-dQUIET",
         "-dBATCH",

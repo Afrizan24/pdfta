@@ -572,7 +572,7 @@
             Target DPI <span class="param-value" id="dpiVal">150</span>
           </div>
           <input type="range" min="72" max="300" step="1" value="150" id="dpiSlider">
-          <div class="param-hint">72 (kecil) ← → 300 (tajam) · hanya SCAN</div>
+          <div class="param-hint">72 (small) ← → 300 (sharp) · affects resolution</div>
         </div>
 
         <!-- JPEG Quality — SCAN only -->
@@ -581,7 +581,7 @@
             Kualitas JPEG <span class="param-value" id="jpegVal">75</span>
           </div>
           <input type="range" min="20" max="95" step="1" value="75" id="jpegSlider">
-          <div class="param-hint">20 (terkecil) ← → 95 (terbaik) · hanya SCAN</div>
+          <div class="param-hint">20 (smallest) ← → 95 (best) · affects JPEG quality</div>
         </div>
 
         <!-- GS PDF Setting — DIGITAL/HYBRID -->
@@ -708,6 +708,19 @@
         <tr><td class="fk">avg gambar / halaman</td><td class="fv" id="rImg">—</td></tr>
         <tr><td class="fk">throughput</td><td class="fv" id="rThroughput">—</td></tr>
         <tr><td class="fk">ghostscript digunakan</td><td class="fv" id="rGs">—</td></tr>
+        <tr><td colspan="2" style="text-align:center; font-weight:700; padding:8px; color:var(--text2); font-family:'JetBrains Mono',monospace;">PARAMETER KOMPRESI YANG DIGUNAKAN</td></tr>
+        <tr><td class="fk">mode input</td><td class="fv" id="rParamMode">—</td></tr>
+        <tr><td class="fk">dpi <span id="rParamDpiUsed" style="font-size:10px;color:var(--text3);"></span></td><td class="fv" id="rParamDpi">—</td></tr>
+        <tr><td class="fk">kualitas jpeg <span id="rParamJpegUsed" style="font-size:10px;color:var(--text3);"></span></td><td class="fv" id="rParamJpeg">—</td></tr>
+        <tr><td class="fk">grayscale</td><td class="fv" id="rParamGray">—</td></tr>
+        <tr><td class="fk">garbage collection <span id="rParamGarbageUsed" style="font-size:10px;color:var(--text3);"></span></td><td class="fv" id="rParamGarbage">—</td></tr>
+        <tr><td class="fk">deflate</td><td class="fv" id="rParamDeflate">—</td></tr>
+        <tr><td class="fk">clean structure</td><td class="fv" id="rParamClean">—</td></tr>
+        <tr><td class="fk">pdf setting</td><td class="fv" id="rParamPdfSetting">—</td></tr>
+        <tr><td class="fk">scan text threshold</td><td class="fv" id="rParamScanTh">—</td></tr>
+        <tr><td class="fk">digital text threshold</td><td class="fv" id="rParamDigitalTh">—</td></tr>
+        <tr><td class="fk">min images for scan</td><td class="fv" id="rParamMinImg">—</td></tr>
+        <tr><td class="fk">max size for gs (MB)</td><td class="fv" id="rParamMaxGs">—</td></tr>
       </table>
       <a id="downloadBtn" class="download-btn hidden" href="#" download>
         ⬇ &nbsp;Download compressed.pdf
@@ -774,20 +787,36 @@
   }
 
   // Fungsi klasifikasi lokal berdasarkan fitur dan threshold
-  function classifyLocal(feats, scanTh, digitalTh, minImg) {
-    const avgText = feats.avg_text_len_per_page;
-    const avgImgs = feats.avg_images_per_page;
-    if (avgText < scanTh && avgImgs >= minImg) return 'SCAN';
-    if (avgText >= digitalTh && avgImgs < 1.0) return 'DIGITAL';
-    return 'HYBRID';
+  function updatePreviewClassification(detectedClass) {
+    const el = document.getElementById('previewClass');
+    if (!detectedClass) {
+      el.style.display = 'none';
+      return;
+    }
+    el.innerHTML = `<span class="class-badge cls-${detectedClass}">${detectedClass}</span>`;
+    el.style.display = 'block';
   }
 
-  function updatePreviewClassification() {
-    if (!S.features) return;
-    const cls = classifyLocal(S.features, S.scanTh, S.digitalTh, S.minImg);
-    const el = document.getElementById('previewClass');
-    el.innerHTML = `<span class="class-badge cls-${cls}">${cls}</span>`;
-    el.style.display = 'block';
+  async function refreshPreview() {
+    if (!S.file) return;
+
+    const fd = new FormData();
+    fd.append('pdf', S.file);
+    fd.append('scan_th', String(S.scanTh));
+    fd.append('digital_th', String(S.digitalTh));
+    fd.append('min_img', String(S.minImg));
+
+    try {
+      const res = await fetch('/preview', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      S.features = data;
+      updatePreviewClassification(data.detected_class);
+      log(`Fitur diekstrak: ${data.pages} halaman, ${data.total_text_len} teks, ${data.total_images} gambar`, 'info');
+    } catch (err) {
+      log('Gagal ekstrak fitur: ' + err.message, 'err');
+      updatePreviewClassification(null);
+    }
   }
 
   /* ================================================================
@@ -837,11 +866,9 @@
     const isAuto    = S.mode === 'AUTO';
     const isDigHyb  = S.mode === 'DIGITAL' || S.mode === 'HYBRID';
 
-    if (isScan || isAuto) {
-      if (S.dpi   !== 150) parts.push({ t: 'flag', v: ' --dpi' },    { t: 'val', v: ` ${S.dpi}` });
-      if (S.jpegQ !== 75)  parts.push({ t: 'flag', v: ' --jpeg-q' }, { t: 'val', v: ` ${S.jpegQ}` });
-      if (S.grayscale)     parts.push({ t: 'flag', v: ' --grayscale' });
-    }
+    if (S.dpi !== 150)  parts.push({ t: 'flag', v: ' --dpi' },    { t: 'val', v: ` ${S.dpi}` });
+    if (S.jpegQ !== 75) parts.push({ t: 'flag', v: ' --jpeg-q' }, { t: 'val', v: ` ${S.jpegQ}` });
+    if (S.grayscale)    parts.push({ t: 'flag', v: ' --grayscale' });
 
     if (!isScan || isAuto) {
       if (S.pdfSetting !== '/ebook') parts.push({ t: 'flag', v: ' --pdf-setting' }, { t: 'val', v: ` ${S.pdfSetting}` });
@@ -878,8 +905,8 @@
     const isScan   = S.mode === 'SCAN';
     const isDigHyb = S.mode === 'DIGITAL' || S.mode === 'HYBRID';
 
-    document.getElementById('dpiCard').classList.toggle('dimmed',   isDigHyb);
-    document.getElementById('jpegCard').classList.toggle('dimmed',  isDigHyb);
+    document.getElementById('dpiCard').classList.toggle('dimmed',   false);  // Now affects all modes
+    document.getElementById('jpegCard').classList.toggle('dimmed',  false);  // Now affects all modes
     document.getElementById('pdfCard').classList.toggle('dimmed',   isScan);
     document.getElementById('gcCard').classList.toggle('dimmed',    isScan);
   }
@@ -924,19 +951,7 @@
     log(`File dimuat: ${f.name} (${fmt(f.size)})`, 'info');
 
     // Preview klasifikasi
-    const fd = new FormData();
-    fd.append('pdf', f);
-    fetch('/preview', { method: 'POST', body: fd })
-      .then(res => res.json())
-      .then(data => {
-        if (data.error) throw new Error(data.error);
-        S.features = data;
-        updatePreviewClassification();
-        log(`Fitur diekstrak: ${data.pages} halaman, ${data.total_text_len} teks, ${data.total_images} gambar`, 'info');
-      })
-      .catch(err => {
-        log('Gagal ekstrak fitur: ' + err.message, 'err');
-      });
+    refreshPreview();
 
     document.getElementById('runBtn').disabled = false;
     document.getElementById('runBtnText').textContent = 'Jalankan Kompresi';
@@ -1000,9 +1015,9 @@
   /* ================================================================
      ADVANCED THRESHOLDS
   ================================================================ */
-  document.getElementById('scanTh').addEventListener('input',    e => { S.scanTh    = +e.target.value; refreshCmd(); updatePreviewClassification(); });
-  document.getElementById('digitalTh').addEventListener('input', e => { S.digitalTh = +e.target.value; refreshCmd(); updatePreviewClassification(); });
-  document.getElementById('minImg').addEventListener('input',    e => { S.minImg    = +e.target.value; refreshCmd(); updatePreviewClassification(); });
+  document.getElementById('scanTh').addEventListener('input',    e => { S.scanTh    = +e.target.value; refreshCmd(); if (S.file) refreshPreview(); });
+  document.getElementById('digitalTh').addEventListener('input', e => { S.digitalTh = +e.target.value; refreshCmd(); if (S.file) refreshPreview(); });
+  document.getElementById('minImg').addEventListener('input',    e => { S.minImg    = +e.target.value; refreshCmd(); if (S.file) refreshPreview(); });
   document.getElementById('maxSizeGs').addEventListener('input', e => { S.maxSizeGs = +e.target.value; refreshCmd(); });
 
   document.getElementById('advToggle').addEventListener('click', () => {
@@ -1153,6 +1168,33 @@
     document.getElementById('rThroughput').textContent = d.throughput_mb_s + ' MB/s';
     document.getElementById('rGs').textContent         = d.gs_used ? '✓ ya' : '✗ tidak (fallback structural)';
 
+    // Display compression parameters used
+    if (d.params) {
+        document.getElementById('rParamMode').textContent = d.params.mode;
+        document.getElementById('rParamDpi').textContent = d.params.dpi;
+        document.getElementById('rParamJpeg').textContent = d.params.jpeg_quality;
+        document.getElementById('rParamGray').textContent = d.params.grayscale ? '✓ ya' : '✗ tidak';
+        document.getElementById('rParamGarbage').textContent = d.params.garbage;
+        document.getElementById('rParamDeflate').textContent = d.params.deflate ? '✓ ya' : '✗ tidak';
+        document.getElementById('rParamClean').textContent = d.params.clean ? '✓ ya' : '✗ tidak';
+        document.getElementById('rParamPdfSetting').textContent = d.params.pdf_setting;
+        document.getElementById('rParamScanTh').textContent = d.params.scan_text_threshold;
+        document.getElementById('rParamDigitalTh').textContent = d.params.digital_text_threshold;
+        document.getElementById('rParamMinImg').textContent = d.params.min_images_for_scan;
+        document.getElementById('rParamMaxGs').textContent = d.params.max_size_for_gs_mb;
+    }
+
+    // Show parameter usage indicators
+    if (d.param_usage) {
+        document.getElementById('rParamDpiUsed').textContent = d.param_usage.dpi_used ? '(digunakan)' : '(tidak digunakan)';
+        document.getElementById('rParamJpegUsed').textContent = d.param_usage.jpeg_used ? '(digunakan)' : '(tidak digunakan)';
+        document.getElementById('rParamGarbageUsed').textContent = d.param_usage.garbage_used ? '(digunakan)' : '(tidak digunakan)';
+
+        if (d.param_usage.gs_skipped_reason) {
+            log(`Ghostscript dilewati: ${d.param_usage.gs_skipped_reason}`, 'warn');
+        }
+    }
+
     document.getElementById('statusPill').className   = 'status-pill pill-ok';
     document.getElementById('statusPill').textContent = 'SUCCESS';
     document.getElementById('results').classList.add('visible');
@@ -1167,6 +1209,16 @@
     log(`  Kelas: ${d.detected_class}  |  Mode: ${d.mode_used}  |  Halaman: ${d.pages}  |  Waktu: ${Math.round(d.time_ms)}ms`, 'ok');
     if (!d.gs_used && (d.mode_used === 'DIGITAL' || d.mode_used === 'HYBRID')) {
       log('  Ghostscript tidak digunakan — install GS untuk kompresi maksimal.', 'warn');
+    }
+
+    // Log parameter usage
+    if (d.param_usage) {
+      if (!d.param_usage.dpi_used) {
+        log('  DPI tidak digunakan — hanya berlaku untuk mode SCAN atau DIGITAL/HYBRID dengan Ghostscript.', 'info');
+      }
+      if (d.param_usage.gs_skipped_reason) {
+        log(`  Ghostscript dilewati: ${d.param_usage.gs_skipped_reason}`, 'warn');
+      }
     }
   }
 
